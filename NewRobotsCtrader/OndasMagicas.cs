@@ -1,444 +1,428 @@
 ﻿using System;
 using System.Linq;
-using System.Text;
+using System.Reflection.Emit;
 using cAlgo.API;
 using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
 
 namespace cAlgo.Robots
 {
-    [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
-    public class SuperTrend : Robot
+    [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
+    public class OndasMagicas : Robot
     {
-        [Parameter("Volume (Lotes)", Group = "Operacional", DefaultValue = 0.1, MinValue = 0.01)]
-        public double VolumeLots { get; set; }
+        private const string RobotDisplayName = "Ondas Mágicas";
 
-        [Parameter("Início das Operações (HH:mm)", Group = "Horário de Negociação", DefaultValue = "00:00")]
-        public string StartTimeStr { get; set; }
+        // ---------------------------------------------------------
+        // Parâmetros - Indicador
+        // ---------------------------------------------------------
+        [Parameter("Tipo da Média", DefaultValue = MovingAverageType.Simple, Group = "Indicador")]
+        public MovingAverageType MaType { get; set; }
 
-        [Parameter("Fim das Operações (HH:mm)", Group = "Horário de Negociação", DefaultValue = "23:59")]
-        public string EndTimeStr { get; set; }
+        [Parameter("Período da Média", DefaultValue = 20, Group = "Indicador")]
+        public int MaPeriod { get; set; }
 
-        [Parameter("Max Spread Permitido (Pips)", Group = "Proteção de Spread", DefaultValue = 3.0, MinValue = 0.1)]
-        public double MaxSpreadPips { get; set; }
+        [Parameter("Fonte de Preço", Group = "Indicador")]
+        public DataSeries SourceSeries { get; set; }
 
-        [Parameter("Habilitar Filtro SMA", Group = "Filtro de Tendência", DefaultValue = true)]
-        public bool EnableSmaFilter { get; set; }
+        [Parameter("Período do Desvio Padrão", DefaultValue = 20, Group = "Indicador")]
+        public int StdDevPeriod { get; set; }
 
-        [Parameter("SMA Period", Group = "Filtro de Tendência", DefaultValue = 200)]
-        public int SmaPeriod { get; set; }
+        [Parameter("Multiplicador do Desvio Padrão", DefaultValue = 1.0, Group = "Indicador")]
+        public double SdMultiplier { get; set; }
 
-        [Parameter("SuperTrend Period", Group = "SuperTrend", DefaultValue = 10)]
-        public int SuperTrendPeriod { get; set; }
+        // ---------------------------------------------------------
+        // Parâmetros - Trading
+        // ---------------------------------------------------------
+        [Parameter("Distância Adicional (Pips)", DefaultValue = 10.0, Group = "Trading")]
+        public double ExtraDistancePips { get; set; }
 
-        [Parameter("SuperTrend Multiplier", Group = "SuperTrend", DefaultValue = 3.0)]
-        public double SuperTrendMultiplier { get; set; }
+        [Parameter("Volume Inicial", DefaultValue = 1000, Group = "Trading")]
+        public double InitialVolume { get; set; }
 
-        [Parameter("Habilitar Saída Parcial", Group = "Saída Parcial", DefaultValue = false)]
-        public bool EnablePartialExit { get; set; }
+        [Parameter("Multiplicador de Lote (1 = Fixo)", DefaultValue = 1.0, Group = "Trading")]
+        public double LotMultiplier { get; set; }
 
-        [Parameter("Volume Parcial (Lotes)", Group = "Saída Parcial", DefaultValue = 0.05, MinValue = 0.01)]
-        public double PartialVolumeLots { get; set; }
+        [Parameter("Máximo de Posições (Bandas)", DefaultValue = 5, Group = "Trading")]
+        public int MaxPositions { get; set; }
 
-        [Parameter("ATR Period (Para Parcial)", Group = "Saída Parcial", DefaultValue = 14)]
-        public int AtrPeriod { get; set; }
+        [Parameter("Take Profit Global (Pips)", DefaultValue = 10, Group = "Trading")]
+        public double TakeProfitPips { get; set; }
 
-        [Parameter("Alvo Parcial (ATR Multiplier)", Group = "Saída Parcial", DefaultValue = 1.0)]
-        public double PartialAtrMultiplier { get; set; }
+        [Parameter("Label / Magic Number", DefaultValue = "OndasMagicas", Group = "Trading")]
+        public string BotLabel { get; set; }
 
-        [Parameter("Distância do Grid (Pips)", Group = "Grid (A Favor da Tendência)", DefaultValue = 20.0, MinValue = 1.0)]
-        public double GridDistancePips { get; set; }
-
-        [Parameter("Max Ordens Grid", Group = "Grid (A Favor da Tendência)", DefaultValue = 5)]
-        public int MaxGridOrders { get; set; }
-
-        [Parameter("Volume Grid (Lotes)", Group = "Grid (A Favor da Tendência)", DefaultValue = 0.05, MinValue = 0.01)]
-        public double GridVolumeLots { get; set; }
-
-        [Parameter("Limite de Ganho Diário ($)", Group = "Gestão de Risco", DefaultValue = 100)]
+        // ---------------------------------------------------------
+        // Parâmetros - Controle Diário
+        // ---------------------------------------------------------
+        [Parameter("Limite Ganho Diário ($)", DefaultValue = 100, Group = "Controle Diário")]
         public double DailyProfitLimit { get; set; }
 
-        [Parameter("Limite de Perda Diária ($)", Group = "Gestão de Risco", DefaultValue = 50)]
+        [Parameter("Limite Perda Diário ($)", DefaultValue = 100, Group = "Controle Diário")]
         public double DailyLossLimit { get; set; }
 
-        [Parameter("Habilitar Proteção de Lucro", Group = "Gestão de Risco", DefaultValue = true)]
-        public bool EnableProfitProtection { get; set; }
+        [Parameter("Fechar Operações ao Atingir Limite?", DefaultValue = true, Group = "Controle Diário")]
+        public bool CloseOnLimitHit { get; set; }
 
-        [Parameter("Gatilho da Proteção (% da Meta)", Group = "Gestão de Risco", DefaultValue = 80.0, MinValue = 1.0)]
-        public double ProtectionTriggerPercent { get; set; }
+        // ---------------------------------------------------------
+        // Parâmetros - Filtro de Horário
+        // ---------------------------------------------------------
+        [Parameter("Hora Início (0-23)", DefaultValue = 9, Group = "Filtro de Horário")]
+        public int StartHour { get; set; }
 
-        [Parameter("Lucro Protegido (% do Ganho)", Group = "Gestão de Risco", DefaultValue = 50.0, MinValue = 1.0)]
-        public double ProtectionLockPercent { get; set; }
+        [Parameter("Minuto Início (0-59)", DefaultValue = 0, Group = "Filtro de Horário")]
+        public int StartMinute { get; set; }
 
-        // Variável constante para a etiqueta das ordens do Bot
-        private const string BotLabel = "ST_Bot";
+        [Parameter("Hora Fim (0-23)", DefaultValue = 17, Group = "Filtro de Horário")]
+        public int EndHour { get; set; }
 
-        private Supertrend _superTrend;
-        private AverageTrueRange _atr;
-        private SimpleMovingAverage _sma;
-        private bool _stoppedForToday;
-        private DateTime _lastTradeDay;
+        [Parameter("Minuto Fim (0-59)", DefaultValue = 30, Group = "Filtro de Horário")]
+        public int EndMinute { get; set; }
 
-        private bool _firstFlipOccurred;
-        private double _partialTargetPrice;
-        private bool _partialExecuted;
+        // ---------------------------------------------------------
+        // Parâmetros - Painel
+        // ---------------------------------------------------------
+        [Parameter("Posição Horizontal", DefaultValue = HorizontalAlignment.Right, Group = "Painel")]
+        public HorizontalAlignment PanelHorizontal { get; set; }
 
-        private bool _spreadTooHigh; // Variável do filtro de Spread
-        private TimeSpan _startTime; // Variável do filtro de Horário
-        private TimeSpan _endTime;   // Variável do filtro de Horário
+        [Parameter("Posição Vertical", DefaultValue = VerticalAlignment.Top, Group = "Painel")]
+        public VerticalAlignment PanelVertical { get; set; }
 
-        // Variáveis da Proteção de Capital
-        private double _highestDailyProfit;
-        private bool _protectionActivated;
-        private bool _stoppedByProtection;
+        [Parameter("Tamanho da Fonte", DefaultValue = 11, Group = "Painel")]
+        public int PanelFontSize { get; set; }
 
-        // --- VARIÁVEIS DE CONTROLE DO PAINEL UI ---
-        private Border _mainPanelBorder;
-        private TextBlock _statusText;
-        private TextBlock _spreadText;
-        private TextBlock _dailyResultText;
-        private TextBlock _floatingText;
-        private Button _toggleButton;
+        // ---------------------------------------------------------
+        // Variáveis de Estado
+        // ---------------------------------------------------------
+        private MovingAverage _ma;
+        private StandardDeviation _stdDev;
+
+        private int _currentDay;
+        private double _dailyPnL;
+        private bool _dailyLimitHit;
+        private bool _isPausedZone;
+
+        // Estado do painel / botão liga-desliga
         private bool _botEnabled = true;
+
+        // Controles do painel
+        private Border _panelBorder;
+        private TextBlock _txtStatus;
+        private TextBlock _txtSpread;
+        private TextBlock _txtDailyResult;
+        private TextBlock _txtFloating;
+        private Button _btnToggle;
 
         protected override void OnStart()
         {
-            _superTrend = Indicators.Supertrend(SuperTrendPeriod, SuperTrendMultiplier);
-            _atr = Indicators.AverageTrueRange(AtrPeriod, MovingAverageType.Simple);
-            _sma = Indicators.SimpleMovingAverage(Bars.ClosePrices, SmaPeriod);
-            _lastTradeDay = Server.Time.Date;
-            _firstFlipOccurred = false;
-            _spreadTooHigh = false;
-            _highestDailyProfit = 0;
-            _protectionActivated = false;
-            _stoppedByProtection = false;
+            _ma = Indicators.MovingAverage(SourceSeries, MaPeriod, MaType);
+            _stdDev = Indicators.StandardDeviation(SourceSeries, StdDevPeriod, MaType);
 
-            if (!TimeSpan.TryParse(StartTimeStr, out _startTime)) _startTime = TimeSpan.Zero;
-            if (!TimeSpan.TryParse(EndTimeStr, out _endTime)) _endTime = new TimeSpan(23, 59, 59);
+            _currentDay = Server.Time.Day;
 
-            BuildUI();
+            Positions.Opened += OnPositionOpened;
+            Positions.Closed += OnPositionClosed;
+
+            CreatePanel();
         }
 
         protected override void OnStop()
         {
-            if (_mainPanelBorder != null)
+            try
             {
-                Chart.RemoveControl(_mainPanelBorder);
+                if (_panelBorder != null)
+                    Chart.RemoveControl(_panelBorder);
+            }
+            catch (Exception ex)
+            {
+                Print("Erro ao remover painel: " + ex.Message);
             }
         }
 
         protected override void OnTick()
         {
-            if (Server.Time.Date != _lastTradeDay)
-            {
-                _stoppedForToday = false;
-                _stoppedByProtection = false;
-                _highestDailyProfit = 0;
-                _protectionActivated = false;
-                _lastTradeDay = Server.Time.Date;
-            }
-
-            UpdateUI();
-
-            if (_stoppedForToday) return;
-
-            // --- PROTEÇÃO DE SPREAD ALTO ---
-            double currentSpreadPips = Symbol.Spread / Symbol.PipSize;
-            _spreadTooHigh = currentSpreadPips > MaxSpreadPips;
-
+            CheckNewDay();
             CheckDailyLimits();
-            CheckPartialExit();
-        }
 
-        protected override void OnBar()
-        {
-            if (_stoppedForToday) return;
+            // O painel é atualizado independentemente do estado de trava diária,
+            // para que o usuário sempre veja o status atual do robô.
+            UpdatePanel();
 
-            bool upTrendCurrent = !double.IsNaN(_superTrend.UpTrend.Last(1));
-            bool downTrendCurrent = !double.IsNaN(_superTrend.DownTrend.Last(1));
+            if (_dailyLimitHit) return;
 
-            bool upTrendPrev = !double.IsNaN(_superTrend.UpTrend.Last(2));
-            bool downTrendPrev = !double.IsNaN(_superTrend.DownTrend.Last(2));
+            ManagePauseState();
 
-            bool flippedToBuy = upTrendCurrent && downTrendPrev;
-            bool flippedToSell = downTrendCurrent && upTrendPrev;
+            var openPositions = Positions.Where(p => p.Label == BotLabel).ToArray();
+            var pendingOrders = PendingOrders.Where(o => o.Label == BotLabel).ToArray();
 
-            double currentClose = Bars.ClosePrices.Last(1);
-            double currentSma = _sma.Result.Last(1);
+            bool isTimeValid = IsTimeValid();
 
-            bool smaAllowBuy = !EnableSmaFilter || (currentClose > currentSma);
-            bool smaAllowSell = !EnableSmaFilter || (currentClose < currentSma);
-
-            TimeSpan currentTime = Server.Time.TimeOfDay;
-            bool isTradingTime = _startTime <= _endTime
-                ? (currentTime >= _startTime && currentTime <= _endTime)
-                : (currentTime >= _startTime || currentTime <= _endTime);
-
-            bool isAllowedBuy = isTradingTime && smaAllowBuy && !_spreadTooHigh && _botEnabled;
-            bool isAllowedSell = isTradingTime && smaAllowSell && !_spreadTooHigh && _botEnabled;
-
-            if (flippedToBuy)
+            if (openPositions.Length == 0)
             {
-                _firstFlipOccurred = true;
+                if (_isPausedZone) return;
 
-                CloseAndCancelAll(); // Saída total pela virada do indicador
+                double ma = _ma.Result.LastValue;
+                double sd = _stdDev.Result.LastValue;
 
-                if (isAllowedBuy)
+                // Cálculo da distância ajustada (Desvio Padrão + Pips Adicionais)
+                double stepDistance = (sd * SdMultiplier) + (ExtraDistancePips * Symbol.PipSize);
+
+                double upperBand1 = ma + stepDistance;
+                double lowerBand1 = ma - stepDistance;
+
+                if (Symbol.Bid > ma && Symbol.Bid < upperBand1 && isTimeValid)
                 {
-                    var volumeInUnits = Symbol.NormalizeVolumeInUnits(Symbol.QuantityToVolumeInUnits(VolumeLots));
-                    ExecuteMarketOrder(TradeType.Buy, SymbolName, volumeInUnits, BotLabel);
-
-                    SetPartialTarget(TradeType.Buy);
-                    ManageDynamicGrid(TradeType.Buy, isAllowedBuy);
+                    CancelOppositeOrders(TradeType.Buy);
+                    ManageDynamicEntry(TradeType.Sell, upperBand1, pendingOrders, 0);
                 }
-            }
-            else if (flippedToSell)
-            {
-                _firstFlipOccurred = true;
-
-                CloseAndCancelAll(); // Saída total pela virada do indicador
-
-                if (isAllowedSell)
+                else if (Symbol.Ask < ma && Symbol.Ask > lowerBand1 && isTimeValid)
                 {
-                    var volumeInUnits = Symbol.NormalizeVolumeInUnits(Symbol.QuantityToVolumeInUnits(VolumeLots));
-                    ExecuteMarketOrder(TradeType.Sell, SymbolName, volumeInUnits, BotLabel);
-
-                    SetPartialTarget(TradeType.Sell);
-                    ManageDynamicGrid(TradeType.Sell, isAllowedSell);
+                    CancelOppositeOrders(TradeType.Sell);
+                    ManageDynamicEntry(TradeType.Buy, lowerBand1, pendingOrders, 0);
                 }
-            }
-            else if (_firstFlipOccurred)
-            {
-                if (upTrendCurrent)
+                else
                 {
-                    ManageDynamicGrid(TradeType.Buy, isAllowedBuy);
+                    CancelAllPendingOrders();
                 }
-                else if (downTrendCurrent)
-                {
-                    ManageDynamicGrid(TradeType.Sell, isAllowedSell);
-                }
-            }
-        }
-
-        private void SetPartialTarget(TradeType tradeType)
-        {
-            _partialExecuted = false;
-            if (!EnablePartialExit) return;
-
-            double atrValue = _atr.Result.Last(1);
-            double currentClose = Bars.ClosePrices.Last(1);
-
-            if (tradeType == TradeType.Buy)
-                _partialTargetPrice = currentClose + (atrValue * PartialAtrMultiplier);
-            else
-                _partialTargetPrice = currentClose - (atrValue * PartialAtrMultiplier);
-        }
-
-        private void CheckPartialExit()
-        {
-            if (!EnablePartialExit || _partialExecuted) return;
-
-            // Busca a posição principal (a mais antiga) para aplicar a saída parcial
-            var mainPosition = Positions.FindAll(BotLabel, SymbolName).OrderBy(p => p.EntryTime).FirstOrDefault();
-
-            if (mainPosition != null)
-            {
-                double currentLivePrice = mainPosition.TradeType == TradeType.Buy ? Symbol.Bid : Symbol.Ask;
-                bool targetReached = false;
-
-                if (mainPosition.TradeType == TradeType.Buy && currentLivePrice >= _partialTargetPrice)
-                    targetReached = true;
-                else if (mainPosition.TradeType == TradeType.Sell && currentLivePrice <= _partialTargetPrice)
-                    targetReached = true;
-
-                if (targetReached)
-                {
-                    double partialVolume = Symbol.NormalizeVolumeInUnits(Symbol.QuantityToVolumeInUnits(PartialVolumeLots));
-
-                    if (partialVolume < mainPosition.VolumeInUnits)
-                        ClosePosition(mainPosition, partialVolume);
-                    else
-                        ClosePosition(mainPosition);
-
-                    _partialExecuted = true;
-                }
-            }
-        }
-
-        // --- GRID A FAVOR DA TENDÊNCIA (PYRAMIDING) ---
-        private void ManageDynamicGrid(TradeType tradeType, bool isAllowed = true)
-        {
-            if (MaxGridOrders <= 0) return;
-
-            var pendingOrders = PendingOrders.Where(x => x.Label == BotLabel && x.SymbolName == SymbolName).ToArray();
-            var activePositions = Positions.FindAll(BotLabel, SymbolName);
-
-            // Validação de segurança: se a principal não abriu ou já fechou, encerra as ordens
-            if (activePositions.Length == 0 || !isAllowed || !_botEnabled)
-            {
-                foreach (var order in pendingOrders) CancelPendingOrder(order);
-                return;
-            }
-
-            int filledGridCount = activePositions.Length - 1;
-            if (filledGridCount >= MaxGridOrders)
-            {
-                // Limite máximo atingido, nenhuma nova ordem será posicionada
-                foreach (var order in pendingOrders) CancelPendingOrder(order);
-                return;
-            }
-
-            // Descobre o preço da posição MAIS AVANÇADA já aberta
-            double referencePrice = tradeType == TradeType.Buy
-                ? activePositions.Max(p => p.EntryPrice)
-                : activePositions.Min(p => p.EntryPrice);
-
-            // Calcula onde deve ficar a próxima ordem baseada no distanciamento em Pips
-            double distance = GridDistancePips * Symbol.PipSize;
-            double nextLevelPrice = tradeType == TradeType.Buy
-                ? referencePrice + distance
-                : referencePrice - distance;
-
-            nextLevelPrice = Math.Round(nextLevelPrice, Symbol.Digits);
-            double gridVolumeInUnits = Symbol.NormalizeVolumeInUnits(Symbol.QuantityToVolumeInUnits(GridVolumeLots));
-
-            // Proteção API: Se por acaso o preço der um salto e já ultrapassar o nível alvo da ordem 
-            // entra a mercado instantaneamente para evitar rejeição da Stop Order.
-            bool shouldExecuteMarket = false;
-            if (tradeType == TradeType.Buy && Symbol.Ask >= nextLevelPrice)
-                shouldExecuteMarket = true;
-            else if (tradeType == TradeType.Sell && Symbol.Bid <= nextLevelPrice)
-                shouldExecuteMarket = true;
-
-            if (shouldExecuteMarket)
-            {
-                foreach (var order in pendingOrders) CancelPendingOrder(order);
-                ExecuteMarketOrder(tradeType, SymbolName, gridVolumeInUnits, BotLabel);
             }
             else
             {
-                var pendingOrder = pendingOrders.FirstOrDefault();
-                if (pendingOrder == null)
+                ManageGrid(openPositions, pendingOrders);
+            }
+        }
+
+        // ---------------------------------------------------------
+        // Lógica de Entradas e Grid
+        // ---------------------------------------------------------
+        private void ManageDynamicEntry(TradeType direction, double targetPrice, PendingOrder[] pendingOrders, int currentPositionCount)
+        {
+            // Interruptor do painel: bloqueia apenas NOVAS entradas (inclui novos níveis de grid).
+            // Gerenciamento de posições já abertas (TP, pausa, limites diários) continua funcionando normalmente.
+            if (!_botEnabled) return;
+
+            double normalizedPrice = Math.Round(targetPrice, Symbol.Digits);
+
+            // Proteção da API: Ajusta limite dependendo do tipo da ordem para evitar rejeição
+            if (direction == TradeType.Buy && normalizedPrice >= Symbol.Ask)
+                normalizedPrice = Symbol.Ask - Symbol.TickSize;
+            else if (direction == TradeType.Sell && normalizedPrice <= Symbol.Bid)
+                normalizedPrice = Symbol.Bid + Symbol.TickSize;
+
+            if (pendingOrders.Length == 0)
+            {
+                double volume = GetVolumeForNextOrder(currentPositionCount);
+                PlaceLimitOrder(direction, SymbolName, volume, normalizedPrice, BotLabel);
+            }
+            else
+            {
+                var order = pendingOrders[0];
+
+                // Só modifica a ordem se a variação justificar (evita sobrecarga da API)
+                if (Math.Abs(order.TargetPrice - normalizedPrice) > Symbol.TickSize)
                 {
-                    // Ordem no formato STOP (esperando o preço atingir e romper o nível de preço a favor)
-                    PlaceStopOrder(tradeType, SymbolName, gridVolumeInUnits, nextLevelPrice, BotLabel);
-                }
-                else if (Math.Abs(pendingOrder.TargetPrice - nextLevelPrice) > Symbol.TickSize)
-                {
-                    // CORREÇÃO CS0121 APLICADA AQUI: 
-                    // Passamos as propriedades de proteção da própria ordem (que já estão nulas)
-                    // para resolver a ambiguidade de tipos da API cTrader mais recente.
-                    ModifyPendingOrder(pendingOrder, nextLevelPrice, pendingOrder.StopLoss, pendingOrder.TakeProfit);
+                    ModifyPendingOrder(order, normalizedPrice, (double?)null, (double?)null);
                 }
             }
         }
 
-        private void GetDailyAndFloatingProfit(out double closedProfit, out double openProfit)
+        private void ManageGrid(Position[] positions, PendingOrder[] pendingOrders)
         {
-            closedProfit = 0;
-            foreach (var trade in History.Where(x => x.ClosingTime.Date == Server.Time.Date && x.SymbolName == SymbolName && x.Label == BotLabel))
+            TradeType gridDirection = positions[0].TradeType;
+            int currentLevel = positions.Length;
+
+            if (currentLevel >= MaxPositions)
             {
-                closedProfit += trade.NetProfit;
+                CancelAllPendingOrders();
+                return;
             }
 
-            openProfit = 0;
-            foreach (var position in Positions.FindAll(BotLabel, SymbolName))
+            int nextMultiplier = currentLevel + 1;
+            double ma = _ma.Result.LastValue;
+            double sd = _stdDev.Result.LastValue;
+
+            // Cálculo da distância ajustada para os próximos níveis do Grid
+            double stepDistance = (sd * SdMultiplier) + (ExtraDistancePips * Symbol.PipSize);
+
+            double targetPrice = gridDirection == TradeType.Sell
+                ? ma + (stepDistance * nextMultiplier)
+                : ma - (stepDistance * nextMultiplier);
+
+            ManageDynamicEntry(gridDirection, targetPrice, pendingOrders, currentLevel);
+        }
+
+        private double GetVolumeForNextOrder(int currentPositions)
+        {
+            double rawVolume = InitialVolume * Math.Pow(LotMultiplier, currentPositions);
+            return Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.ToNearest);
+        }
+
+        // ---------------------------------------------------------
+        // Eventos e Take Profit Global
+        // ---------------------------------------------------------
+        private void OnPositionOpened(PositionOpenedEventArgs args)
+        {
+            if (args.Position.Label != BotLabel) return;
+            RecalculateTakeProfit();
+        }
+
+        private void OnPositionClosed(PositionClosedEventArgs args)
+        {
+            if (args.Position.Label != BotLabel) return;
+
+            _dailyPnL += args.Position.NetProfit;
+            CheckDailyLimits();
+
+            var remainingPositions = Positions.Where(p => p.Label == BotLabel).ToArray();
+
+            if (remainingPositions.Length > 0)
             {
-                openProfit += position.NetProfit;
+                // Se sobrarem posições após um fechamento (ex.: stop out, fechamento manual),
+                // o preço médio mudou e o TP global precisa ser recalculado para refletir isso.
+                RecalculateTakeProfit();
+            }
+            else
+            {
+                CancelAllPendingOrders();
+
+                // Verifica se encerrou fora da zona inicial aceitável (baseada na nova distância)
+                double ma = _ma.Result.LastValue;
+                double sd = _stdDev.Result.LastValue;
+                double stepDistance = (sd * SdMultiplier) + (ExtraDistancePips * Symbol.PipSize);
+
+                double upperBand1 = ma + stepDistance;
+                double lowerBand1 = ma - stepDistance;
+
+                if (Symbol.Bid > upperBand1 || Symbol.Ask < lowerBand1)
+                {
+                    _isPausedZone = true;
+                }
+            }
+        }
+
+        private void RecalculateTakeProfit()
+        {
+            var allPositions = Positions.Where(p => p.Label == BotLabel).ToArray();
+            if (allPositions.Length == 0) return;
+
+            TradeType type = allPositions[0].TradeType;
+
+            // Filtra explicitamente pela direção do grid ativo, evitando que uma posição
+            // remanescente de direção oposta distorça o cálculo do preço médio.
+            var positions = allPositions.Where(p => p.TradeType == type).ToArray();
+
+            double totalVolume = 0;
+            double totalCost = 0;
+
+            foreach (var pos in positions)
+            {
+                totalVolume += pos.VolumeInUnits;
+                totalCost += pos.EntryPrice * pos.VolumeInUnits;
+            }
+
+            if (totalVolume <= 0) return;
+
+            double averagePrice = totalCost / totalVolume;
+            double tpOffset = TakeProfitPips * Symbol.PipSize;
+
+            double tpPrice = type == TradeType.Buy
+                ? averagePrice + tpOffset
+                : averagePrice - tpOffset;
+
+            tpPrice = Math.Round(tpPrice, Symbol.Digits);
+
+            foreach (var pos in positions)
+            {
+                if (!pos.TakeProfit.HasValue || Math.Abs(pos.TakeProfit.Value - tpPrice) > Symbol.TickSize)
+                {
+                    ModifyPosition(pos, null, tpPrice);
+                }
+            }
+        }
+
+        // ---------------------------------------------------------
+        // Filtros e Travas
+        // ---------------------------------------------------------
+        private void ManagePauseState()
+        {
+            if (!_isPausedZone) return;
+
+            double ma = _ma.Result.LastValue;
+            double sd = _stdDev.Result.LastValue;
+            double stepDistance = (sd * SdMultiplier) + (ExtraDistancePips * Symbol.PipSize);
+
+            double upperBand1 = ma + stepDistance;
+            double lowerBand1 = ma - stepDistance;
+
+            // Se o preço retornar para entre a Banda -1 e a Banda +1, libera o robô
+            if (Symbol.Bid <= upperBand1 && Symbol.Ask >= lowerBand1)
+            {
+                _isPausedZone = false;
+            }
+        }
+
+        private void CheckNewDay()
+        {
+            if (Server.Time.Day != _currentDay)
+            {
+                _currentDay = Server.Time.Day;
+                _dailyPnL = 0;
+                _dailyLimitHit = false;
             }
         }
 
         private void CheckDailyLimits()
         {
-            GetDailyAndFloatingProfit(out double closedProfit, out double openProfit);
-            double todayProfit = closedProfit + openProfit;
+            if (_dailyLimitHit) return;
 
-            if (todayProfit > _highestDailyProfit)
-            {
-                _highestDailyProfit = todayProfit;
-            }
+            double openPnL = Positions.Where(p => p.Label == BotLabel).Sum(p => p.NetProfit);
+            double totalDailyPnL = _dailyPnL + openPnL;
 
-            if (DailyProfitLimit > 0 && EnableProfitProtection && !_protectionActivated)
+            if (totalDailyPnL <= -DailyLossLimit || totalDailyPnL >= DailyProfitLimit)
             {
-                if (_highestDailyProfit >= DailyProfitLimit * (ProtectionTriggerPercent / 100.0))
+                _dailyLimitHit = true;
+                CancelAllPendingOrders();
+
+                if (CloseOnLimitHit)
                 {
-                    _protectionActivated = true;
+                    foreach (var position in Positions.Where(p => p.Label == BotLabel))
+                    {
+                        ClosePosition(position);
+                    }
                 }
-            }
-
-            if (DailyProfitLimit > 0 && todayProfit >= DailyProfitLimit)
-            {
-                CloseAndCancelAll();
-                _stoppedForToday = true;
-                _firstFlipOccurred = false;
-            }
-            else if (DailyLossLimit > 0 && todayProfit <= -DailyLossLimit)
-            {
-                CloseAndCancelAll();
-                _stoppedForToday = true;
-                _firstFlipOccurred = false;
-            }
-            else if (_protectionActivated && todayProfit <= _highestDailyProfit * (ProtectionLockPercent / 100.0))
-            {
-                CloseAndCancelAll();
-                _stoppedForToday = true;
-                _stoppedByProtection = true;
-                _firstFlipOccurred = false;
             }
         }
 
-        private void CloseAndCancelAll()
+        private bool IsTimeValid()
         {
-            foreach (var position in Positions.FindAll(BotLabel, SymbolName))
-            {
-                ClosePosition(position);
-            }
+            TimeSpan now = Server.Time.TimeOfDay;
+            TimeSpan start = new TimeSpan(StartHour, StartMinute, 0);
+            TimeSpan end = new TimeSpan(EndHour, EndMinute, 0);
 
-            foreach (var order in PendingOrders.Where(x => x.Label == BotLabel && x.SymbolName == SymbolName).ToArray())
+            if (start < end)
+                return now >= start && now <= end;
+            else
+                return now >= start || now <= end;
+        }
+
+        private void CancelAllPendingOrders()
+        {
+            foreach (var order in PendingOrders.Where(o => o.Label == BotLabel))
             {
                 CancelPendingOrder(order);
             }
         }
 
-        protected override void OnPositionClosed(Position position)
+        private void CancelOppositeOrders(TradeType typeToCancel)
         {
-            if (position.Label != BotLabel)
-                return;
-
-            SaveTradeToCsv(position);
-        }
-
-        private void SaveTradeToCsv(Position position)
-        {
-            try
+            foreach (var order in PendingOrders.Where(o => o.Label == BotLabel && o.TradeType == typeToCancel))
             {
-                string folderPath = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "cTrader_Logs");
-                System.IO.Directory.CreateDirectory(folderPath);
-
-                string fileName = $"Operacoes_{Account.Number}_{Server.Time:yyyy-MM-dd}.csv";
-                string filePath = System.IO.Path.Combine(folderPath, fileName);
-                bool fileExists = System.IO.File.Exists(filePath);
-
-                using (var writer = new System.IO.StreamWriter(filePath, true, Encoding.UTF8))
-                {
-                    if (!fileExists)
-                    {
-                        writer.WriteLine("ID;Ativo;Tipo;Volume;DataEntrada;DataSaida;PrecoEntrada;LucroLiquidoUSD;Resultado");
-                    }
-
-                    string resultado = position.NetProfit >= 0 ? "WIN" : "LOSS";
-                    string line = $"{position.Id};{position.SymbolName};{position.TradeType};{position.Quantity};{position.EntryTime:yyyy-MM-dd HH:mm:ss};{Server.Time:yyyy-MM-dd HH:mm:ss};{position.EntryPrice};{position.NetProfit:F2};{resultado}";
-
-                    writer.WriteLine(line);
-                }
-            }
-            catch (Exception ex)
-            {
-                Print("Erro ao salvar no CSV: " + ex.Message);
+                CancelPendingOrder(order);
             }
         }
 
-        private void BuildUI()
+        // ---------------------------------------------------------
+        // Painel Visual de Monitoramento e Controle
+        // ---------------------------------------------------------
+        private void CreatePanel()
         {
             try
             {
@@ -451,39 +435,40 @@ namespace cAlgo.Robots
                     Width = 220
                 };
 
-                _mainPanelBorder = new Border
+                _panelBorder = new Border
                 {
                     BorderColor = Color.FromArgb(255, 75, 75, 75),
                     BorderThickness = new Thickness(1),
                     Child = mainStack,
-                    HorizontalAlignment = HorizontalAlignment.Right,
-                    VerticalAlignment = VerticalAlignment.Top,
+                    HorizontalAlignment = PanelHorizontal,
+                    VerticalAlignment = PanelVertical,
                     Margin = new Thickness(15)
                 };
 
-                mainStack.AddChild(CreateText($"ROBÔ: {this.GetType().Name}", Color.Gold, true));
+                mainStack.AddChild(CreateText($"ROBÔ: {RobotDisplayName}", Color.Gold, true));
                 mainStack.AddChild(CreateDivider());
 
-                _statusText = CreateText("Status: ● ATIVO", Color.Lime, true);
-                mainStack.AddChild(_statusText);
+                _txtStatus = CreateText("Status: ● ATIVO", Color.Lime, true);
+                mainStack.AddChild(_txtStatus);
 
                 mainStack.AddChild(CreateText($"Ativo: {SymbolName}", Color.WhiteSmoke));
 
-                _spreadText = CreateText("Spread: -- pips", Color.WhiteSmoke);
-                mainStack.AddChild(_spreadText);
+                _txtSpread = CreateText("Spread: -- pips", Color.WhiteSmoke);
+                mainStack.AddChild(_txtSpread);
 
                 mainStack.AddChild(CreateDivider());
                 mainStack.AddChild(CreateText($"Meta lucro: +${DailyProfitLimit:F2}", Color.LightSkyBlue));
                 mainStack.AddChild(CreateText($"Meta perda: -${DailyLossLimit:F2}", Color.LightPink));
 
                 mainStack.AddChild(CreateDivider());
-                _dailyResultText = CreateText("Resultado dia: --", Color.WhiteSmoke, true);
-                mainStack.AddChild(_dailyResultText);
 
-                _floatingText = CreateText("Flutuante: --", Color.WhiteSmoke);
-                mainStack.AddChild(_floatingText);
+                _txtDailyResult = CreateText("Resultado dia: --", Color.WhiteSmoke, true);
+                mainStack.AddChild(_txtDailyResult);
 
-                _toggleButton = new Button
+                _txtFloating = CreateText("Flutuante: --", Color.WhiteSmoke);
+                mainStack.AddChild(_txtFloating);
+
+                _btnToggle = new Button
                 {
                     Text = "DESLIGAR ROBÔ",
                     BackgroundColor = Color.Crimson,
@@ -492,12 +477,13 @@ namespace cAlgo.Robots
                     Height = 25,
                     FontWeight = FontWeight.Bold
                 };
-                _toggleButton.Click += OnToggleButtonClick;
+
+                _btnToggle.Click += OnToggleButtonClick;
 
                 mainStack.AddChild(CreateDivider());
-                mainStack.AddChild(_toggleButton);
+                mainStack.AddChild(_btnToggle);
 
-                Chart.AddControl(_mainPanelBorder);
+                Chart.AddControl(_panelBorder);
             }
             catch (Exception ex)
             {
@@ -512,6 +498,7 @@ namespace cAlgo.Robots
                 Text = text,
                 ForegroundColor = color,
                 FontWeight = bold ? FontWeight.ExtraBold : FontWeight.Normal,
+                FontSize = PanelFontSize,
                 Margin = new Thickness(5, 3, 5, 3)
             };
         }
@@ -528,77 +515,135 @@ namespace cAlgo.Robots
 
         private void OnToggleButtonClick(ButtonClickEventArgs args)
         {
-            _botEnabled = !_botEnabled;
+            try
+            {
+                _botEnabled = !_botEnabled;
 
-            if (_botEnabled)
-            {
-                _statusText.Text = "Status: ● ATIVO";
-                _statusText.ForegroundColor = Color.Lime;
-                _toggleButton.Text = "DESLIGAR ROBÔ";
-                _toggleButton.BackgroundColor = Color.Crimson;
+                if (_botEnabled)
+                {
+                    _txtStatus.Text = "Status: ● ATIVO";
+                    _txtStatus.ForegroundColor = Color.Lime;
+                    _btnToggle.Text = "DESLIGAR ROBÔ";
+                    _btnToggle.BackgroundColor = Color.Crimson;
+                }
+                else
+                {
+                    _txtStatus.Text = "Status: ○ DESATIVADO";
+                    _txtStatus.ForegroundColor = Color.Tomato;
+                    _btnToggle.Text = "LIGAR ROBÔ";
+                    _btnToggle.BackgroundColor = Color.SeaGreen;
+                    CancelAllPendingOrders();
+                }
+
+                // Se o limite diário estiver atingido, ele continua prevalecendo visualmente.
+                if (_dailyLimitHit)
+                    RefreshPanelStaticTexts();
             }
-            else
+            catch (Exception ex)
             {
-                _statusText.Text = "Status: ○ DESATIVADO";
-                _statusText.ForegroundColor = Color.Tomato;
-                _toggleButton.Text = "LIGAR ROBÔ";
-                _toggleButton.BackgroundColor = Color.SeaGreen;
+                Print("Erro no botão do painel: " + ex.Message);
             }
         }
 
-        private void UpdateUI()
+        private void UpdatePanel()
         {
-            if (_mainPanelBorder == null) return;
+            if (_panelBorder == null) return;
 
             try
             {
-                double currentSpreadPips = Symbol.Spread / Symbol.PipSize;
-                _spreadText.Text = $"Spread: {currentSpreadPips:F1} / {MaxSpreadPips:F1} pips";
+                double currentSpreadPips = Symbol.PipSize > 0
+                    ? (Symbol.Ask - Symbol.Bid) / Symbol.PipSize
+                    : 0;
 
-                if (currentSpreadPips > MaxSpreadPips)
-                    _spreadText.ForegroundColor = Color.Tomato;
-                else
-                    _spreadText.ForegroundColor = Color.WhiteSmoke;
+                _txtSpread.Text = $"Spread: {currentSpreadPips:F1} pips";
 
-                GetDailyAndFloatingProfit(out double dailyClosedProfit, out double floatingProfit);
+                if (currentSpreadPips > 0)
+                    _txtSpread.ForegroundColor = Color.WhiteSmoke;
 
-                _floatingText.Text = $"Flutuante: {(floatingProfit >= 0 ? "+" : "-")}${Math.Abs(floatingProfit):F2}";
-                _floatingText.ForegroundColor = floatingProfit >= 0 ? Color.Lime : Color.Tomato;
+                double floating = 0;
+                var openPositions = Positions.Where(p => p.Label == BotLabel);
 
-                if (_stoppedForToday)
+                if (openPositions.Any())
+                    floating = openPositions.Sum(p => p.NetProfit);
+
+                _txtFloating.Text =
+                    $"Flutuante: {(floating >= 0 ? "+" : "-")}${Math.Abs(floating):F2}";
+                _txtFloating.ForegroundColor =
+                    floating >= 0 ? Color.Lime : Color.Tomato;
+
+                if (_dailyLimitHit)
                 {
-                    double totalProfit = dailyClosedProfit + floatingProfit;
-
-                    if (_stoppedByProtection)
+                    if (_dailyPnL >= DailyProfitLimit)
                     {
-                        _dailyResultText.Text = "LUCRO PROTEGIDO ATINGIDO";
-                        _dailyResultText.ForegroundColor = Color.Gold;
+                        _txtDailyResult.Text = "META DE LUCRO ATINGIDA";
+                        _txtDailyResult.ForegroundColor = Color.Lime;
                     }
-                    else if (DailyProfitLimit > 0 && totalProfit >= DailyProfitLimit)
+                    else if (_dailyPnL <= -DailyLossLimit)
                     {
-                        _dailyResultText.Text = "META DE LUCRO ATINGIDA";
-                        _dailyResultText.ForegroundColor = Color.Lime;
-                    }
-                    else if (DailyLossLimit > 0 && totalProfit <= -DailyLossLimit)
-                    {
-                        _dailyResultText.Text = "LIMITE DE PERDA ATINGIDO";
-                        _dailyResultText.ForegroundColor = Color.Tomato;
+                        _txtDailyResult.Text = "LIMITE DE PERDA ATINGIDO";
+                        _txtDailyResult.ForegroundColor = Color.Tomato;
                     }
                     else
                     {
-                        _dailyResultText.Text = $"Resultado dia: {(dailyClosedProfit >= 0 ? "+" : "-")}${Math.Abs(dailyClosedProfit):F2}";
-                        _dailyResultText.ForegroundColor = dailyClosedProfit >= 0 ? Color.Lime : Color.Tomato;
+                        _txtDailyResult.Text =
+                            $"Resultado dia: {(_dailyPnL >= 0 ? "+" : "-")}${Math.Abs(_dailyPnL):F2}";
+                        _txtDailyResult.ForegroundColor =
+                            _dailyPnL >= 0 ? Color.Lime : Color.Tomato;
                     }
                 }
                 else
                 {
-                    _dailyResultText.Text = $"Resultado dia: {(dailyClosedProfit >= 0 ? "+" : "-")}${Math.Abs(dailyClosedProfit):F2}";
-                    _dailyResultText.ForegroundColor = dailyClosedProfit >= 0 ? Color.Lime : Color.Tomato;
+                    _txtDailyResult.Text =
+                        $"Resultado dia: {(_dailyPnL >= 0 ? "+" : "-")}${Math.Abs(_dailyPnL):F2}";
+                    _txtDailyResult.ForegroundColor =
+                        _dailyPnL >= 0 ? Color.Lime : Color.Tomato;
                 }
+
+                RefreshPanelStaticTexts();
             }
             catch (Exception ex)
             {
                 Print("Falha ao atualizar painel visual: " + ex.Message);
+            }
+        }
+
+        private void RefreshPanelStaticTexts()
+        {
+            if (_txtStatus == null) return;
+
+            if (_dailyLimitHit)
+            {
+                if (_dailyPnL >= DailyProfitLimit)
+                {
+                    _txtStatus.Text = "Status: ● META DE LUCRO ATINGIDA";
+                    _txtStatus.ForegroundColor = Color.Gold;
+                }
+                else
+                {
+                    _txtStatus.Text = "Status: ● LIMITE DE PERDA ATINGIDO";
+                    _txtStatus.ForegroundColor = Color.Tomato;
+                }
+            }
+            else if (_botEnabled)
+            {
+                _txtStatus.Text = "Status: ● ATIVO";
+                _txtStatus.ForegroundColor = Color.Lime;
+            }
+            else
+            {
+                _txtStatus.Text = "Status: ○ DESATIVADO";
+                _txtStatus.ForegroundColor = Color.Tomato;
+            }
+
+            if (_btnToggle != null)
+            {
+                _btnToggle.Text = _botEnabled
+                    ? "DESLIGAR ROBÔ"
+                    : "LIGAR ROBÔ";
+
+                _btnToggle.BackgroundColor = _botEnabled
+                    ? Color.Crimson
+                    : Color.SeaGreen;
             }
         }
     }
