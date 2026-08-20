@@ -141,6 +141,7 @@ namespace cAlgo.Robots
         protected override void OnTick()
         {
             CheckNewDay();
+            CheckDailyLimits();
 
             // O painel é atualizado independentemente do estado de trava diária,
             // para que o usuário sempre veja o status atual do robô.
@@ -372,7 +373,10 @@ namespace cAlgo.Robots
         {
             if (_dailyLimitHit) return;
 
-            if (_dailyPnL <= -DailyLossLimit || _dailyPnL >= DailyProfitLimit)
+            double openPnL = Positions.Where(p => p.Label == BotLabel).Sum(p => p.NetProfit);
+            double totalDailyPnL = _dailyPnL + openPnL;
+
+            if (totalDailyPnL <= -DailyLossLimit || totalDailyPnL >= DailyProfitLimit)
             {
                 _dailyLimitHit = true;
                 CancelAllPendingOrders();
